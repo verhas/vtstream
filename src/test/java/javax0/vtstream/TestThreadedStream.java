@@ -3,16 +3,17 @@ package javax0.vtstream;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-public class TestThreaded {
+public class TestThreadedStream {
 
     @Test
     void test() throws InterruptedException {
         AtomicInteger i = new AtomicInteger(3000);
-        final var s = Threaded.threaded(Stream.of("a", "b", "c").parallel()).map(k ->
+        final var s = ThreadedStream.threaded(Stream.of("a", "b", "c").parallel()).map(k ->
             {
                 try {
                     Thread.sleep(i.getAndAdd(-1000));
@@ -21,7 +22,7 @@ public class TestThreaded {
                 }
                 return k + k;
             }
-        ).toStream().collect(Collectors.joining(","));
-        Assertions.assertEquals("aa,bb,cc", s);
+        ).collect(Collectors.toSet());
+        Assertions.assertEquals(Set.of("aa","bb","cc"), s);
     }
 }

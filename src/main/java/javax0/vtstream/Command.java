@@ -41,16 +41,54 @@ abstract class Command<T, R> {
         }
     }
 
-    public static class AnyMatch<T> extends Command<T, T> {
-        private final Predicate<T> predicate;
-        private
-        public Filter(Predicate<T> predicate) {
+    /**
+     * The command Any match is invoked as a last stage from the terminal operation anyMatch.
+     * <p>
+     * This command deletes all entries that do not match and also those that come after the first match. There remains
+     * one undeleted entry, a boolean true. The actual value is not important. This operation optimizes the execution of
+     * the thread so that the elements that are not needed may not be executed.
+     *
+     * @param <T>
+     */
+    public static class AnyMatch<T> extends Command<T, Boolean> {
+        private final Predicate<? super T> predicate;
+        private volatile boolean match = false;
+
+        public AnyMatch(Predicate<? super T> predicate) {
             this.predicate = predicate;
         }
 
         @Override
+        public Result<Boolean> execute(T t) {
+            if (match) {
+                return Command.RESULT_DELETED;
+            }
+            if (predicate.test(t)) {
+                match = true;
+                return new Result<>(false, true);
+            }
+            return Command.RESULT_DELETED;
+        }
+    }
+
+    public static class FindFirst<T> extends Command<T, T> {
+        private volatile boolean match = false;
+
+        @Override
         public Result<T> execute(T t) {
-            return new Result<T>(predicate.test(t), t);
+            if (match) {
+                return Command.RESULT_DELETED;
+            }
+            match = true;
+            return new Result<>(false, t);
+        }
+    }
+
+    public static class NoOp<T> extends Command<T, T> {
+
+        @Override
+        public Result<T> execute(T t) {
+            return new Result<>(false, t);
         }
     }
 
