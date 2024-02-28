@@ -2,31 +2,78 @@ package javax0.vtstream;
 
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
 /**
- * Performs a stream command, like Map, Filter and so on.
+ * Represents an abstract command to be performed on elements of a stream.
+ * This class and its subclasses encapsulate operations such as mapping, filtering,
+ * distinct, and others that can be applied to stream elements.
+ * <p>
+ * The {@code Command} class uses a generic type {@code <T>} for input elements and {@code <R>}
+ * for the result of the command execution. Each command processes elements of type {@code T}
+ * and produces results of type {@code R}. Commands can modify elements, filter them, or apply
+ * any other operation as defined in their specific implementation.
  *
- * @param <T>
- * @param <R>
+ * @param <T> the type of the input elements to the command
+ * @param <R> the type of the result of the command execution
  */
 abstract class Command<T, R> {
-    static class Result<R> {
-        final boolean isDeleted;
-        final R result;
 
-        Result(boolean isDeleted, R result) {
-            this.isDeleted = isDeleted;
-            this.result = result;
+    /**
+     * A record that encapsulates the result of executing a command. It can represent
+     * a valid result or a special marker indicating that an element has been "deleted"
+     * or filtered out by the command.
+     *
+     * @param <R> the type of the result
+     */
+    public record Result<R>(R result) {
+        /**
+         * A static final instance of Result representing a deleted or filtered out element.
+         */
+        static final Result<Object> DELETED = new Result<>(null);
+        /**
+         * Checks if this result represents a deleted element.
+         *
+         * @return {@code true} if this result is the special DELETED marker, {@code false} otherwise.
+         */
+        public boolean isDeleted() {
+            return this == DELETED;
         }
     }
+    /**
+     * Creates a special {@code Result} instance representing a deleted or filtered out element.
+     *
+     * @param <T> the type of the input elements
+     * @return a {@code Result} instance representing a deleted element.
+     */
+    public static <T> Result<T> deleted() {
+        //noinspection unchecked
+        return (Result<T>) Result.DELETED;
+    }
 
-    public static final Result RESULT_DELETED = new Result(true, null);
-
+    /**
+     * Executes the command on a given element.
+     *
+     * @param t the input element to process
+     * @return the result of executing the command on the input element
+     */
     public abstract Result<R> execute(T t);
+
+    /**
+     * Helper method to create a result unless a condition is met, in which case it returns
+     * a "deleted" result.
+     *
+     * @param isDeleted the condition that determines if the result should be "deleted"
+     * @param t         the input element to wrap in a {@code Result}, unless it is "deleted"
+     * @return a {@code Result} wrapping the input element or a "deleted" result
+     */
+    private static <T> Result<T> unless(boolean isDeleted, T t) {
+        return isDeleted ? deleted() : new Result<>(t);
+    }
 
     public static class Filter<T> extends Command<T, T> {
         private final Predicate<T> predicate;
@@ -37,7 +84,7 @@ abstract class Command<T, R> {
 
         @Override
         public Result<T> execute(T t) {
-            return new Result<T>(predicate.test(t), t);
+            return unless(!predicate.test(t), t);
         }
     }
 
@@ -50,37 +97,33 @@ abstract class Command<T, R> {
      *
      * @param <T>
      */
-    public static class AnyMatch<T> extends Command<T, Boolean> {
+    public static class AnyMatch<T> extends Command<T, T> {
         private final Predicate<? super T> predicate;
-        private volatile boolean match = false;
+        private final AtomicBoolean match = new AtomicBoolean(false);
 
         public AnyMatch(Predicate<? super T> predicate) {
             this.predicate = predicate;
         }
 
         @Override
-        public Result<Boolean> execute(T t) {
-            if (match) {
-                return Command.RESULT_DELETED;
+        public synchronized Result<T> execute(T t) {
+            if (!match.get() && predicate.test(t)) {
+                try {
+                    return new Result<>(t);
+                } finally {
+                    match.set(true);
+                }
             }
-            if (predicate.test(t)) {
-                match = true;
-                return new Result<>(false, true);
-            }
-            return Command.RESULT_DELETED;
+            return deleted();
         }
     }
 
     public static class FindFirst<T> extends Command<T, T> {
-        private volatile boolean match = false;
+        private final AtomicBoolean match = new AtomicBoolean(false);
 
         @Override
         public Result<T> execute(T t) {
-            if (match) {
-                return Command.RESULT_DELETED;
-            }
-            match = true;
-            return new Result<>(false, t);
+            return unless(match.getAndSet(true), t);
         }
     }
 
@@ -88,7 +131,7 @@ abstract class Command<T, R> {
 
         @Override
         public Result<T> execute(T t) {
-            return new Result<>(false, t);
+            return new Result<>(t);
         }
     }
 
@@ -97,15 +140,19 @@ abstract class Command<T, R> {
 
         @Override
         public Result<T> execute(T t) {
-            synchronized (this) {
-                return new Result<T>(accumulator.contains(t), t);
+            try {
+                synchronized (this) {
+                    return unless(accumulator.contains(t), t);
+                }
+            } finally {
+                accumulator.add(t);
             }
         }
     }
 
     public static class Limit<T> extends Command<T, T> {
         private final long maxSize;
-        private AtomicLong counter = new AtomicLong(1);
+        private final AtomicLong counter = new AtomicLong(1);
 
         public Limit(long maxSize) {
             this.maxSize = maxSize;
@@ -113,12 +160,12 @@ abstract class Command<T, R> {
 
         @Override
         public Result<T> execute(T t) {
-            return new Result<T>(counter.getAndIncrement() > maxSize, t);
+            return unless(counter.getAndIncrement() > maxSize, t);
         }
     }
 
     public static class Skip<T> extends Command<T, T> {
-        private AtomicLong n;
+        private final AtomicLong n;
 
         public Skip(long n) {
             this.n = new AtomicLong(n);
@@ -126,7 +173,7 @@ abstract class Command<T, R> {
 
         @Override
         public Result<T> execute(T t) {
-            return new Result<T>(n.getAndDecrement() > 0, t);
+            return unless(n.getAndDecrement() > 0, t);
         }
     }
 
@@ -140,7 +187,7 @@ abstract class Command<T, R> {
         @Override
         public Result<T> execute(T t) {
             action.accept(t);
-            return new Result<>(false, t);
+            return new Result<>(t);
         }
     }
 
@@ -153,7 +200,7 @@ abstract class Command<T, R> {
 
         @Override
         public Result<R> execute(T t) {
-            return new Result<R>(false, transform.apply(t));
+            return new Result<>(transform.apply(t));
         }
     }
 

@@ -1,32 +1,11 @@
 package javax0.vtstream;
 
-import java.util.Collections;
-import java.util.Comparator;
-import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Optional;
-import java.util.Spliterator;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.BiConsumer;
-import java.util.function.BiFunction;
-import java.util.function.BinaryOperator;
-import java.util.function.Consumer;
-import java.util.function.Function;
-import java.util.function.IntFunction;
-import java.util.function.Predicate;
-import java.util.function.Supplier;
-import java.util.function.ToDoubleFunction;
-import java.util.function.ToIntFunction;
-import java.util.function.ToLongFunction;
-import java.util.stream.Collector;
-import java.util.stream.DoubleStream;
-import java.util.stream.IntStream;
-import java.util.stream.LongStream;
-import java.util.stream.Stream;
+import java.util.function.*;
+import java.util.stream.*;
+
+import static javax0.vtstream.Command.deleted;
 
 public class ThreadedStream<T> implements Stream<T> {
 
@@ -64,64 +43,102 @@ public class ThreadedStream<T> implements Stream<T> {
     }
 
     private Stream<T> toUnorderedStream() {
-        ThreadGroup group = new ThreadGroup("stream");
-        group.setMaxPriority(Thread.MAX_PRIORITY);
-        group.setDaemon(true);
-        ExecutorService executor = Executors.newThreadExecutor((r) -> Thread.builder()
-            .group(group)
-            .virtual()
-            .task(r)
-            .build());
-        final List<T> result = Collections.synchronizedList(new LinkedList<>());
-        final List<Future<?>> futures = new LinkedList<>();
+        final var result = Collections.synchronizedList(new LinkedList<T>());
+        final AtomicInteger n = new AtomicInteger(0);
         source.spliterator().forEachRemaining(
-            t -> futures.add(executor.submit(() -> {
-                    final var r = calculate(t);
-                    if (!r.isDeleted) {
-                        result.add(r.result);
-                    }
+                t -> {
+                    Thread.startVirtualThread(() -> {
+                        final var r = calculate(t);
+                        if (!r.isDeleted()) {
+                            result.add(r.result());
+                        }else{
+                            n.decrementAndGet();
+                        }
+                    });
+                    n.incrementAndGet();
                 }
-            )));
-        for (final var future : futures) {
-            future.join();
+        );
+        while (result.isEmpty()) {
+            Thread.yield();
         }
-        return result.stream();
+        return Stream.iterate(
+                result.removeFirst(),
+                x -> n.getAndDecrement() > 0,
+                x -> {
+                    while (n.get() > 0 && result.isEmpty()) {
+                        Thread.yield();
+                    }
+                    return result.isEmpty() ? null : result.removeFirst();
+                });
     }
 
     private Stream<T> toOrderedStream() {
-        ExecutorService executor = Executors.newThreadExecutor((r) -> Thread.builder()
-            .virtual()
-            .task(r)
-            .build());
-        final List<Future<Command.Result<T>>> result = Collections.synchronizedList(new LinkedList<>());
-        source.spliterator().forEachRemaining(t -> result.add(executor.submit(() -> calculate(t))));
-        return result.stream().map(r -> {
-            try {
-                return r.get();
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        }).filter(r -> !r.isDeleted).map(r -> r.result);
+        class R {
+            Thread t;
+            Command.Result<T> result;
+        }
+        final var results = Collections.synchronizedList(new LinkedList<R>());
+        final AtomicInteger n = new AtomicInteger(0);
+        source.forEach(
+                t -> {
+                    final var re = new R();
+                    re.t =
+                            Thread.startVirtualThread(() -> {
+                                final var r = calculate(t);
+                                if (!r.isDeleted()) {
+                                    re.result = r;
+                                }
+                            });
+                    results.add(re);
+                    n.incrementAndGet();
+                }
+        );
+        final var first = results.removeFirst();
+        try {
+            first.t.join();
+        } catch (InterruptedException e) {
+            first.result = deleted();
+        }
+        return Stream.iterate(
+                first.result.result(),
+                x -> n.getAndDecrement() > 0,
+                x -> {
+                    if (n.get() > 0) {
+                        final var next = results.removeFirst();
+                        try {
+                            next.t.join();
+                        } catch (InterruptedException e) {
+                            next.result = deleted();
+                        }
+                        return next.result.isDeleted() ? null : next.result.result();
+                    } else {
+                        return null;
+                    }
+                });
     }
 
 
     Command.Result<T> calculate(Object value) {
         if (Thread.interrupted()) {
-            return Command.RESULT_DELETED;
+            return deleted();
         }
         if (downstream == null) {
-            return new Command.Result<>(false, (T) value);
+            return new Command.Result<>((T) value);
         } else {
             final var result = downstream.calculate(value);
-            if (result.isDeleted) {
-                return Command.RESULT_DELETED;
+            if (result.isDeleted()) {
+                return deleted();
             }
-            return (Command.Result<T>) command.execute((T) result.result);
+            //noinspection unchecked
+            return (Command.Result<T>) command.execute((T) result.result());
         }
     }
 
     public Stream<T> filter(Predicate<? super T> predicate) {
-        return new ThreadedStream<T>(new Command.Filter<T>((Predicate<T>) predicate), this, source);
+        return new ThreadedStream<T>(
+                new Command.Filter<T>((Predicate<T>) predicate),
+                this,
+                source);
     }
 
 
@@ -225,12 +242,12 @@ public class ThreadedStream<T> implements Stream<T> {
 
     @Override
     public <U> U reduce(U identity, BiFunction<U, ? super T, U> accumulator, BinaryOperator<U> combiner) {
-        return toStream().reduce(identity,accumulator,combiner);
+        return toStream().reduce(identity, accumulator, combiner);
     }
 
     @Override
     public <R> R collect(Supplier<R> supplier, BiConsumer<R, ? super T> accumulator, BiConsumer<R, R> combiner) {
-        return toStream().collect(supplier,accumulator,combiner);
+        return toStream().collect(supplier, accumulator, combiner);
     }
 
     @Override
@@ -270,30 +287,35 @@ public class ThreadedStream<T> implements Stream<T> {
 
     @Override
     public Optional<T> findFirst() {
-        return new ThreadedStream<T>(new Command.FindFirst<>(), downstream, this).toStream().findFirst();
+        return new ThreadedStream<T>(new Command.FindFirst<>(), downstream, source).toStream().findFirst();
     }
 
 
+    @Override
     public Optional<T> findAny() {
         return findFirst();
     }
 
 
+    @Override
     public Iterator<T> iterator() {
         return toStream().iterator();
     }
 
 
+    @Override
     public Spliterator<T> spliterator() {
         return toStream().spliterator();
     }
 
 
+    @Override
     public boolean isParallel() {
         return true;
     }
 
 
+    @Override
     public Stream<T> sequential() {
         if (source.isParallel()) {
             return threaded(toStream().sequential());
@@ -302,6 +324,7 @@ public class ThreadedStream<T> implements Stream<T> {
     }
 
 
+    @Override
     public Stream<T> parallel() {
         if (source.isParallel()) {
             return this;
@@ -310,6 +333,7 @@ public class ThreadedStream<T> implements Stream<T> {
     }
 
 
+    @Override
     public Stream<T> unordered() {
         return this;
     }
@@ -317,11 +341,13 @@ public class ThreadedStream<T> implements Stream<T> {
 
     private final Runnable closeHandler;
 
+    @Override
     public Stream<T> onClose(Runnable closeHandler) {
         return new ThreadedStream<T>(new Command.NoOp<>(), this, source, closeHandler);
     }
 
 
+    @Override
     public void close() {
         if (downstream != null) {
             downstream.close();
