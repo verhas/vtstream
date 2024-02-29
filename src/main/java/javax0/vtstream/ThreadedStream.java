@@ -7,6 +7,7 @@ import java.util.stream.*;
 
 import static javax0.vtstream.Command.deleted;
 
+@SuppressWarnings("NullableProblems")
 public class ThreadedStream<T> implements Stream<T> {
 
     private final Command<T, ?> command;
@@ -32,8 +33,6 @@ public class ThreadedStream<T> implements Stream<T> {
         return new ThreadedStream<>(null, null, source);
     }
 
-    private final AtomicInteger c = new AtomicInteger(1);
-
     private Stream<T> toStream() {
         if (source.isParallel()) {
             return toUnorderedStream();
@@ -45,13 +44,13 @@ public class ThreadedStream<T> implements Stream<T> {
     private Stream<T> toUnorderedStream() {
         final var result = Collections.synchronizedList(new LinkedList<T>());
         final AtomicInteger n = new AtomicInteger(0);
-        source.spliterator().forEachRemaining(
+        source.forEach(
                 t -> {
                     Thread.startVirtualThread(() -> {
                         final var r = calculate(t);
                         if (!r.isDeleted()) {
                             result.add(r.result());
-                        }else{
+                        } else {
                             n.decrementAndGet();
                         }
                     });
@@ -123,6 +122,7 @@ public class ThreadedStream<T> implements Stream<T> {
             return deleted();
         }
         if (downstream == null) {
+            //noinspection unchecked
             return new Command.Result<>((T) value);
         } else {
             final var result = downstream.calculate(value);
@@ -135,20 +135,23 @@ public class ThreadedStream<T> implements Stream<T> {
     }
 
     public Stream<T> filter(Predicate<? super T> predicate) {
-        return new ThreadedStream<T>(
-                new Command.Filter<T>((Predicate<T>) predicate),
-                this,
-                source);
+        //noinspection unchecked
+        return filteredStream(new Command.Filter<>((Predicate<T>) predicate));
+    }
+
+    private ThreadedStream<T> filteredStream(Command<T, T> command) {
+        return new ThreadedStream<>(command, this, source);
     }
 
 
     public <R> ThreadedStream<R> map(Function<? super T, ? extends R> mapper) {
-        return new ThreadedStream<R>((Command<R, ?>) new Command.Map<T, R>((Function<T, R>) mapper), this, source);
+        //noinspection unchecked
+        return new ThreadedStream<>((Command<R, ?>) new Command.Map<>((Function<T, R>) mapper), this, source);
     }
 
     @Override
     public IntStream mapToInt(ToIntFunction<? super T> mapper) {
-        return null;
+        return toStream().mapToInt(mapper);
     }
 
     @Override
@@ -163,74 +166,82 @@ public class ThreadedStream<T> implements Stream<T> {
 
     @Override
     public <R> Stream<R> flatMap(Function<? super T, ? extends Stream<? extends R>> mapper) {
-        return null;
+        return toStream().flatMap(mapper);
     }
 
     @Override
     public IntStream flatMapToInt(Function<? super T, ? extends IntStream> mapper) {
-        return null;
+        return toStream().flatMapToInt(mapper);
     }
 
     @Override
     public LongStream flatMapToLong(Function<? super T, ? extends LongStream> mapper) {
-        return null;
+        return toStream().flatMapToLong(mapper);
     }
 
     @Override
     public DoubleStream flatMapToDouble(Function<? super T, ? extends DoubleStream> mapper) {
-        return null;
+        return toStream().flatMapToDouble(mapper);
     }
 
-    public Stream<T> distinct() {
-        return new ThreadedStream<T>(new Command.Distinct<T>(), this, source);
+    @Override
+    public ThreadedStream<T> distinct() {
+        return filteredStream(new Command.Distinct<>());
     }
 
-
+    @Override
     public Stream<T> sorted() {
-        throw new RuntimeException("not implemented");
+        return toStream().sorted();
     }
 
-
+    @Override
     public Stream<T> sorted(Comparator<? super T> comparator) {
-        throw new RuntimeException("not implemented");
+        return toStream().sorted(comparator);
     }
 
-
+    @Override
     public Stream<T> peek(Consumer<? super T> action) {
-        return new ThreadedStream<T>(new Command.Peek<T>(action), this, source);
+        return filteredStream(new Command.Peek<>(action));
     }
 
 
-    public Stream<T> limit(long maxSize) {
-        return new ThreadedStream<T>(new Command.Limit<T>(maxSize), this, source);
+    @Override
+    public ThreadedStream<T> limit(long maxSize) {
+        return filteredStream(new Command.Limit<>(maxSize));
     }
 
 
+    @Override
     public Stream<T> skip(long n) {
-        return new ThreadedStream<T>(new Command.Skip<T>(n), this, source);
+        return filteredStream(new Command.Skip<>(n));
     }
 
 
+    @Override
     public void forEach(Consumer<? super T> action) {
         toStream().forEach(action);
     }
 
 
+    @Override
     public void forEachOrdered(Consumer<? super T> action) {
         toStream().forEachOrdered(action);
     }
 
 
+    @Override
     public Object[] toArray() {
         return toStream().toArray();
     }
 
 
+    @Override
     public <A> A[] toArray(IntFunction<A[]> generator) {
         return toStream().toArray(generator);
     }
 
 
+    @Override
     public T reduce(T identity, BinaryOperator<T> accumulator) {
         return toStream().reduce(identity, accumulator);
     }
@@ -272,7 +283,7 @@ public class ThreadedStream<T> implements Stream<T> {
 
 
     public boolean anyMatch(Predicate<? super T> predicate) {
-        return new ThreadedStream<T>(new Command.AnyMatch<T>(predicate), this, source).toStream().findAny().isPresent();
+        return filteredStream(new Command.AnyMatch<>(predicate)).toStream().findAny().isPresent();
     }
 
     @Override
@@ -287,13 +298,13 @@ public class ThreadedStream<T> implements Stream<T> {
 
     @Override
     public Optional<T> findFirst() {
-        return new ThreadedStream<T>(new Command.FindFirst<>(), downstream, source).toStream().findFirst();
+        return filteredStream(new Command.FindFirst<>()).toStream().findFirst();
     }
 
 
     @Override
     public Optional<T> findAny() {
-        return findFirst();
+        return filteredStream(new Command.FindAny<>()).toStream().findAny();
     }
 
 
@@ -343,7 +354,7 @@ public class ThreadedStream<T> implements Stream<T> {
 
     @Override
     public Stream<T> onClose(Runnable closeHandler) {
-        return new ThreadedStream<T>(new Command.NoOp<>(), this, source, closeHandler);
+        return new ThreadedStream<>(new Command.NoOp<>(), this, source, closeHandler);
     }
 
 

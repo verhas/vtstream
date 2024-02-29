@@ -35,6 +35,7 @@ abstract class Command<T, R> {
          * A static final instance of Result representing a deleted or filtered out element.
          */
         static final Result<Object> DELETED = new Result<>(null);
+
         /**
          * Checks if this result represents a deleted element.
          *
@@ -44,6 +45,7 @@ abstract class Command<T, R> {
             return this == DELETED;
         }
     }
+
     /**
      * Creates a special {@code Result} instance representing a deleted or filtered out element.
      *
@@ -86,6 +88,11 @@ abstract class Command<T, R> {
         public Result<T> execute(T t) {
             return unless(!predicate.test(t), t);
         }
+
+        @Override
+        public String toString() {
+            return "Filter";
+        }
     }
 
     /**
@@ -124,6 +131,20 @@ abstract class Command<T, R> {
         @Override
         public Result<T> execute(T t) {
             return unless(match.getAndSet(true), t);
+        }
+    }
+
+    public static class FindAny<T> extends Command<T, T> {
+        private final AtomicBoolean match = new AtomicBoolean(false);
+
+        @Override
+        public Result<T> execute(T t) {
+            return unless(match.getAndSet(true), t);
+        }
+
+        @Override
+        public String toString() {
+            return "FindAny";
         }
     }
 
@@ -201,6 +222,10 @@ abstract class Command<T, R> {
         @Override
         public Result<R> execute(T t) {
             return new Result<>(transform.apply(t));
+        }
+        @Override
+        public String toString() {
+            return "Map";
         }
     }
 
