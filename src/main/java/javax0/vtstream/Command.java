@@ -30,11 +30,11 @@ abstract class Command<T, R> {
      *
      * @param <R> the type of the result
      */
-    public record Result<R>(R result) {
+    public record Result<R>(R result, Exception exception) {
         /**
          * A static final instance of Result representing a deleted or filtered out element.
          */
-        static final Result<Object> DELETED = new Result<>(null);
+        static final Result<Object> DELETED = new Result<>(null, null);
 
         /**
          * Checks if this result represents a deleted element.
@@ -43,6 +43,14 @@ abstract class Command<T, R> {
          */
         public boolean isDeleted() {
             return this == DELETED;
+        }
+
+        public Result(R result) {
+            this(result, null);
+        }
+
+        public Result(Exception exception) {
+            this(null, exception);
         }
     }
 
@@ -55,6 +63,11 @@ abstract class Command<T, R> {
     public static <T> Result<T> deleted() {
         //noinspection unchecked
         return (Result<T>) Result.DELETED;
+    }
+
+    public static <T> Result<T> exception(Exception e) {
+        //noinspection unchecked
+        return new Result<>(e);
     }
 
     /**
@@ -87,11 +100,6 @@ abstract class Command<T, R> {
         @Override
         public Result<T> execute(T t) {
             return unless(!predicate.test(t), t);
-        }
-
-        @Override
-        public String toString() {
-            return "Filter";
         }
     }
 
@@ -142,10 +150,6 @@ abstract class Command<T, R> {
             return unless(match.getAndSet(true), t);
         }
 
-        @Override
-        public String toString() {
-            return "FindAny";
-        }
     }
 
     public static class NoOp<T> extends Command<T, T> {
@@ -161,27 +165,13 @@ abstract class Command<T, R> {
 
         @Override
         public Result<T> execute(T t) {
-            try {
-                synchronized (this) {
+            synchronized (this) {
+                try {
                     return unless(accumulator.contains(t), t);
+                } finally {
+                    accumulator.add(t);
                 }
-            } finally {
-                accumulator.add(t);
             }
-        }
-    }
-
-    public static class Limit<T> extends Command<T, T> {
-        private final long maxSize;
-        private final AtomicLong counter = new AtomicLong(1);
-
-        public Limit(long maxSize) {
-            this.maxSize = maxSize;
-        }
-
-        @Override
-        public Result<T> execute(T t) {
-            return unless(counter.getAndIncrement() > maxSize, t);
         }
     }
 
@@ -223,10 +213,7 @@ abstract class Command<T, R> {
         public Result<R> execute(T t) {
             return new Result<>(transform.apply(t));
         }
-        @Override
-        public String toString() {
-            return "Map";
-        }
+
     }
 
 }

@@ -6,6 +6,7 @@ import java.util.function.*;
 import java.util.stream.*;
 
 import static javax0.vtstream.Command.deleted;
+import static javax0.vtstream.Command.exception;
 
 @SuppressWarnings("NullableProblems")
 public class ThreadedStream<T> implements Stream<T> {
@@ -14,18 +15,27 @@ public class ThreadedStream<T> implements Stream<T> {
     private final ThreadedStream<?> downstream;
     private final Stream<?> source;
 
+    private long limit = -1;
+
+    private boolean chained = false;
+    private static final String MSG_STREAM_LINKED = "stream has already been operated upon or closed";
+
     private ThreadedStream(Command<T, ?> command, ThreadedStream<?> downstream, Stream<?> source) {
-        this.command = command;
-        this.downstream = downstream;
-        this.source = source;
-        this.closeHandler = () -> {
-        };
+        this(command, downstream, source, () -> {
+        });
     }
 
     private ThreadedStream(Command<T, ?> command, ThreadedStream<?> downstream, Stream<?> source, Runnable closeHandler) {
         this.command = command;
         this.downstream = downstream;
+        if (downstream != null) {
+            if (downstream.chained) {
+                throw new IllegalStateException(MSG_STREAM_LINKED);
+            }
+            downstream.chained = true;
+        }
         this.source = source;
+        this.limit = downstream == null ? -1 : downstream.limit;
         this.closeHandler = closeHandler;
     }
 
@@ -33,90 +43,137 @@ public class ThreadedStream<T> implements Stream<T> {
         return new ThreadedStream<>(null, null, source);
     }
 
-    private Stream<T> toStream() {
-        if (source.isParallel()) {
-            return toUnorderedStream();
-        } else {
-            return toOrderedStream();
+
+    public static class ThreadExecutionException extends RuntimeException {
+        public ThreadExecutionException(Throwable cause) {
+            super(cause);
         }
     }
 
-    private Stream<T> toUnorderedStream() {
-        final var result = Collections.synchronizedList(new LinkedList<T>());
-        final AtomicInteger n = new AtomicInteger(0);
-        source.forEach(
-                t -> {
-                    Thread.startVirtualThread(() -> {
-                        final var r = calculate(t);
-                        if (!r.isDeleted()) {
-                            result.add(r.result());
-                        } else {
-                            n.decrementAndGet();
-                        }
-                    });
-                    n.incrementAndGet();
-                }
-        );
-        while (result.isEmpty()) {
-            Thread.yield();
+    private Stream<T> toStream() {
+        try {
+            if (source.isParallel()) {
+                return toUnorderedStream();
+            } else {
+                return toOrderedStream();
+            }
+        }finally {
+            close();
         }
-        return Stream.iterate(
-                result.removeFirst(),
-                x -> n.getAndDecrement() > 0,
-                x -> {
-                    while (n.get() > 0 && result.isEmpty()) {
+    }
+
+    /**
+     * Creates an unordered stream of processed elements from the source stream. This method leverages virtual threads
+     * to process each element of the source stream concurrently. The results are stored in a synchronized list as they
+     * become available, allowing for the immediate consumption of processed elements without waiting for all processing
+     * threads to complete.
+     * <p>
+     * This approach facilitates a non-blocking, efficient streaming process where elements are emitted to the resulting
+     * stream as soon as they are ready. The synchronization on the {@code results} list ensures thread safety, while the use of
+     * an {@link AtomicInteger} allows for tracking the completion of elements without blocking stream consumption.
+     * <p>
+     * The returned stream filters out any elements marked as deleted (indicating processing failures or interruptions) and
+     * maps the remaining {@link Command.Result} objects to their respective results. This method effectively demonstrates
+     * an asynchronous, concurrent processing pattern within the stream API, optimizing throughput and reducing latency
+     * for stream operations.
+     * <p>
+     * Note: The use of virtual threads requires the JVM to support Project Loom or a similar concurrency model. The method
+     * employs a busy-wait loop to poll for available results, which may have implications for CPU usage in environments
+     * with a high number of concurrent tasks.
+     *
+     * @return a new {@link Stream} of type {@code T}, consisting of elements processed concurrently and emitted as soon as
+     * they become available, disregarding their original order in the source stream.
+     */
+
+    private Stream<T> toUnorderedStream() {
+        final var result = Collections.synchronizedList(new LinkedList<Command.Result<T>>());
+        final AtomicInteger n = new AtomicInteger(0);
+        final Stream<?> limitedSource = limit >= 0 ? source.limit(limit) : source;
+        limitedSource.forEach(
+                t -> {
+                    Thread.startVirtualThread(() -> result.add(calculate(t)));
+                    n.incrementAndGet();
+                });
+        return IntStream.range(0, n.get())
+                .mapToObj(i -> {
+                    while (result.isEmpty()) {
                         Thread.yield();
                     }
-                    return result.isEmpty() ? null : result.removeFirst();
-                });
+                    return result.removeFirst();
+                })
+                .filter(f -> !f.isDeleted())
+                .peek(r -> {
+                    if (r.exception() != null) {
+                        throw new ThreadExecutionException(r.exception());
+                    }
+                })
+                .map(Command.Result::result);
     }
+
 
     private Stream<T> toOrderedStream() {
         class R {
             Thread t;
-            Command.Result<T> result;
+            volatile Command.Result<T> result;
+
+            /**
+             * Wait for the thread calculating the result to be finished. This method is blocking.
+             * @param result the result to wait for
+             */
+            static void waitForResult(R result) {
+                try {
+                    result.t.join();
+                } catch (InterruptedException e) {
+                    result.result = deleted();
+                }
+            }
         }
         final var results = Collections.synchronizedList(new LinkedList<R>());
-        final AtomicInteger n = new AtomicInteger(0);
-        source.forEach(
+
+        final Stream<?> limitedSource = limit >= 0 ? source.limit(limit) : source;
+        limitedSource.forEach(
                 t -> {
                     final var re = new R();
-                    re.t =
-                            Thread.startVirtualThread(() -> {
-                                final var r = calculate(t);
-                                if (!r.isDeleted()) {
-                                    re.result = r;
-                                }
-                            });
                     results.add(re);
-                    n.incrementAndGet();
+                    re.t = Thread.startVirtualThread(() -> {
+                        re.result = calculate(t);
+                    });
                 }
         );
-        final var first = results.removeFirst();
-        try {
-            first.t.join();
-        } catch (InterruptedException e) {
-            first.result = deleted();
-        }
-        return Stream.iterate(
-                first.result.result(),
-                x -> n.getAndDecrement() > 0,
-                x -> {
-                    if (n.get() > 0) {
-                        final var next = results.removeFirst();
-                        try {
-                            next.t.join();
-                        } catch (InterruptedException e) {
-                            next.result = deleted();
+
+        return results.stream()
+                .peek(R::waitForResult)
+                .map(f -> f.result)
+                .peek(r -> {
+                            if (r.exception() != null) {
+                                throw new ThreadExecutionException(r.exception());
+                            }
                         }
-                        return next.result.isDeleted() ? null : next.result.result();
-                    } else {
-                        return null;
-                    }
-                });
+                )
+                .filter(r -> !r.isDeleted()).map(Command.Result::result);
     }
 
-
+    /**
+     * Performs a recursive calculation by applying the stream's command to the given value, ensuring that all commands
+     * in the processing chain are executed in sequence. This method is a key component of the stream's functionality,
+     * enabling the transformation or computation of stream elements through a series of commands.
+     * <p>
+     * When invoked, this method checks if there is a downstream {@code ThreadedStream}. If there isn't one, indicating
+     * that this instance is at the end of the command chain, it simply wraps the input value in a {@link Command.Result}
+     * and returns it. However, if a downstream exists, the method first recursively calls {@code calculate()} on the downstream
+     * stream, passing the input value for processing. Once the downstream processing is completed, and if the result is not
+     * marked as deleted, it applies the current stream's command to the downstream's result. This recursive approach ensures
+     * that all commands in the chain are executed, starting from the terminal command back to the initial command.
+     * <p>
+     * The method also handles thread interruptions by immediately returning a deleted result if the current thread is
+     * interrupted. This ensures the stream's ability to deal with interruptions in a multithreaded environment, maintaining
+     * the correct processing semantics.
+     *
+     * @param value the input value to be processed by this and possibly downstream streams' commands.
+     * @return a {@link Command.Result} object encapsulating the result of the computation through the command chain.
+     * If the computation is interrupted or deemed invalid, a deleted result is returned to signify this state.
+     * @throws ClassCastException if the command's execution type does not match the provided value's type.
+     */
     Command.Result<T> calculate(Object value) {
         if (Thread.interrupted()) {
             return deleted();
@@ -125,15 +182,21 @@ public class ThreadedStream<T> implements Stream<T> {
             //noinspection unchecked
             return new Command.Result<>((T) value);
         } else {
-            final var result = downstream.calculate(value);
-            if (result.isDeleted()) {
-                return deleted();
+            try {
+                final var result = downstream.calculate(value);
+                if (result.isDeleted() || result.exception() != null) {
+                    //noinspection unchecked
+                    return (Command.Result<T>) result;
+                }
+                //noinspection unchecked
+                return (Command.Result<T>) command.execute((T) result.result());
+            } catch (Exception e) {
+                return exception(e);
             }
-            //noinspection unchecked
-            return (Command.Result<T>) command.execute((T) result.result());
         }
     }
 
+    @Override
     public Stream<T> filter(Predicate<? super T> predicate) {
         //noinspection unchecked
         return filteredStream(new Command.Filter<>((Predicate<T>) predicate));
@@ -144,6 +207,7 @@ public class ThreadedStream<T> implements Stream<T> {
     }
 
 
+    @Override
     public <R> ThreadedStream<R> map(Function<? super T, ? extends R> mapper) {
         //noinspection unchecked
         return new ThreadedStream<>((Command<R, ?>) new Command.Map<>((Function<T, R>) mapper), this, source);
@@ -207,13 +271,18 @@ public class ThreadedStream<T> implements Stream<T> {
 
     @Override
     public ThreadedStream<T> limit(long maxSize) {
-        return filteredStream(new Command.Limit<>(maxSize));
+        limit = maxSize;
+        return this;
     }
 
 
     @Override
     public Stream<T> skip(long n) {
-        return filteredStream(new Command.Skip<>(n));
+        if (source.isParallel()) {
+            return filteredStream(new Command.Skip<>(n));
+        } else {
+            return toStream().skip(n);
+        }
     }
 
 
@@ -225,7 +294,7 @@ public class ThreadedStream<T> implements Stream<T> {
 
     @Override
     public void forEachOrdered(Consumer<? super T> action) {
-        toStream().forEachOrdered(action);
+        toOrderedStream().forEachOrdered(action);
     }
 
 
@@ -298,7 +367,11 @@ public class ThreadedStream<T> implements Stream<T> {
 
     @Override
     public Optional<T> findFirst() {
-        return filteredStream(new Command.FindFirst<>()).toStream().findFirst();
+        if (isParallel()) {
+            return filteredStream(new Command.FindFirst<>()).toStream().findFirst();
+        } else {
+            return toStream().findFirst();
+        }
     }
 
 
@@ -322,7 +395,7 @@ public class ThreadedStream<T> implements Stream<T> {
 
     @Override
     public boolean isParallel() {
-        return true;
+        return source.isParallel();
     }
 
 
