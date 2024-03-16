@@ -11,7 +11,10 @@ import static javax0.vtstream.Command.exception;
 @SuppressWarnings("NullableProblems")
 public class ThreadedStream<T> implements Stream<T> {
 
-    private final Command<T, ?> command;
+    // it is not possible to represent the type of the command's input parameter and that of the downstream
+    // without introducing another type argument, and complicating the interface; however, the constructors
+    // ensure that the command is compatible with the downstream
+    private final Command<Object, T> command;
     private final ThreadedStream<?> downstream;
     private final Stream<?> source;
 
@@ -20,13 +23,29 @@ public class ThreadedStream<T> implements Stream<T> {
     private boolean chained = false;
     private static final String MSG_STREAM_LINKED = "stream has already been operated upon or closed";
 
-    private ThreadedStream(Command<T, ?> command, ThreadedStream<?> downstream, Stream<?> source) {
-        this(command, downstream, source, () -> {
-        });
+    /**
+     * Constructs a new ThreadedStream instance by applying a command on a downstream
+     * @param command the command to be applied to each element of the downstream, producing elements of the constructed stream
+     * @param downstream
+     * @param <S> the type of the source (downstream)
+     */
+    private <S> ThreadedStream(Command<? super S, ? extends T> command, ThreadedStream<S> downstream) {
+        this(command, downstream, () -> {});
     }
 
-    private ThreadedStream(Command<T, ?> command, ThreadedStream<?> downstream, Stream<?> source, Runnable closeHandler) {
-        this.command = command;
+    /**
+     * Constructs a new ThreadedStream instance by applying a command on a downstream
+     * @param command
+     * @param downstream
+     * @param closeHandler
+     * @param <S> the type of the source (downstream)
+     */
+    private <S> ThreadedStream(Command<? super S, ? extends T> command, ThreadedStream<S> downstream, Runnable closeHandler) {
+        // we'll lose '<S>' after this point, but we know the command is compatible with the downstream;
+        // cast the command now, so we don't need to cast it later:
+        // its input will come from downstream, so will be type S, which will be erased into Object anyway
+        // we don't care what exact subtype of T the result is
+        this.command = (Command<Object, T>) command;
         this.downstream = downstream;
         if (downstream != null) {
             if (downstream.chained) {
@@ -34,13 +53,21 @@ public class ThreadedStream<T> implements Stream<T> {
             }
             downstream.chained = true;
         }
-        this.source = source;
+        this.source = downstream.source;
         this.limit = downstream == null ? -1 : downstream.limit;
         this.closeHandler = closeHandler;
     }
 
+    private ThreadedStream(Stream<T> source) {
+        this.command = null;
+        this.downstream = null;
+        this.source = source;
+        this.limit = -1;
+        this.closeHandler = () -> {};
+    }
+
     public static <K> ThreadedStream<K> threaded(Stream<K> source) {
-        return new ThreadedStream<>(null, null, source);
+        return new ThreadedStream<>(source);
     }
 
 
@@ -112,37 +139,37 @@ public class ThreadedStream<T> implements Stream<T> {
 
 
     private Stream<T> toOrderedStream() {
-        class R {
-            Thread t;
+        class Task {
+            Thread workerThread;
             volatile Command.Result<T> result;
 
             /**
-             * Wait for the thread calculating the result to be finished. This method is blocking.
-             * @param result the result to wait for
+             * Wait for the thread calculating the result of the task to be finished. This method is blocking.
+             * @param task the task to wait for
              */
-            static void waitForResult(R result) {
+            static void waitForResult(Task task) {
                 try {
-                    result.t.join();
+                    task.workerThread.join();
                 } catch (InterruptedException e) {
-                    result.result = deleted();
+                    task.result = deleted();
                 }
             }
         }
-        final var results = Collections.synchronizedList(new LinkedList<R>());
+        final var tasks = Collections.synchronizedList(new LinkedList<Task>());
 
         final Stream<?> limitedSource = limit >= 0 ? source.limit(limit) : source;
         limitedSource.forEach(
-                t -> {
-                    final var re = new R();
-                    results.add(re);
-                    re.t = Thread.startVirtualThread(() -> {
-                        re.result = calculate(t);
+                sourceItem -> {
+                    Task task = new Task();
+                    tasks.add(task);
+                    task.workerThread = Thread.startVirtualThread(() -> {
+                        task.result = calculate(sourceItem);
                     });
                 }
         );
 
-        return results.stream()
-                .peek(R::waitForResult)
+        return tasks.stream()
+                .peek(Task::waitForResult)
                 .map(f -> f.result)
                 .peek(r -> {
                             if (r.exception() != null) {
@@ -183,13 +210,12 @@ public class ThreadedStream<T> implements Stream<T> {
             return new Command.Result<>((T) value);
         } else {
             try {
-                final var result = downstream.calculate(value);
-                if (result.isDeleted() || result.exception() != null) {
+                Command.Result<?> downstreamResult = downstream.calculate(value);
+                if (downstreamResult.isDeleted() || downstreamResult.exception() != null) {
                     //noinspection unchecked
-                    return (Command.Result<T>) result;
+                    return (Command.Result<T>) downstreamResult;
                 }
-                //noinspection unchecked
-                return (Command.Result<T>) command.execute((T) result.result());
+                return command.execute(downstreamResult.result());
             } catch (Exception e) {
                 return exception(e);
             }
@@ -198,19 +224,18 @@ public class ThreadedStream<T> implements Stream<T> {
 
     @Override
     public Stream<T> filter(Predicate<? super T> predicate) {
-        //noinspection unchecked
-        return filteredStream(new Command.Filter<>((Predicate<T>) predicate));
+        return filteredStream(new Command.Filter<>(predicate));
     }
 
     private ThreadedStream<T> filteredStream(Command<T, T> command) {
-        return new ThreadedStream<>(command, this, source);
+        return new ThreadedStream<>(command, this);
     }
 
 
     @Override
     public <R> ThreadedStream<R> map(Function<? super T, ? extends R> mapper) {
         //noinspection unchecked
-        return new ThreadedStream<>((Command<R, ?>) new Command.Map<>((Function<T, R>) mapper), this, source);
+        return new ThreadedStream<>(new Command.Map<>(mapper), this);
     }
 
     @Override
@@ -427,7 +452,7 @@ public class ThreadedStream<T> implements Stream<T> {
 
     @Override
     public Stream<T> onClose(Runnable closeHandler) {
-        return new ThreadedStream<>(new Command.NoOp<>(), this, source, closeHandler);
+        return new ThreadedStream<>(new Command.NoOp<>(), this, closeHandler);
     }
 
 

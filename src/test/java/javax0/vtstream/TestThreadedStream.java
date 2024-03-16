@@ -90,8 +90,8 @@ public class TestThreadedStream {
     public void testMap() {
         Stream<Integer> sourceStream = Stream.of(1, 2, 3, 4);
         ThreadedStream<Integer> threadedStream = ThreadedStream.threaded(sourceStream);
-        List<Integer> result = threadedStream.map(i -> i * 2).toList();
-        assertArrayEquals(new Integer[]{2, 4, 6, 8}, result.toArray(), "Map does not work correctly");
+        List<String> result = threadedStream.map(i -> "" + 2*i).toList();
+        assertArrayEquals(new String[]{"2", "4", "6", "8"}, result.toArray(), "Map does not work correctly");
     }
 
     @Test
