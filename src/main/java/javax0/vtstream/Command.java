@@ -91,9 +91,9 @@ abstract class Command<T, R> {
     }
 
     public static class Filter<T> extends Command<T, T> {
-        private final Predicate<T> predicate;
+        private final Predicate<? super T> predicate;
 
-        public Filter(Predicate<T> predicate) {
+        public Filter(Predicate<? super T> predicate) {
             this.predicate = predicate;
         }
 
