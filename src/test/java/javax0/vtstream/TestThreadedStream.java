@@ -95,6 +95,14 @@ public class TestThreadedStream {
     }
 
     @Test
+    public void testMapIntegerToString() {
+        Stream<Integer> sourceStream = Stream.of(1, 2, 3, 4);
+        ThreadedStream<Integer> threadedStream = ThreadedStream.threaded(sourceStream);
+        List<String> result = threadedStream.map(i -> "" + i).toList();
+        assertArrayEquals(new String[]{"1", "2", "3", "4"}, result.toArray(), "Map does not work correctly");
+    }
+
+    @Test
     public void testCount() {
         Stream<String> sourceStream = Stream.of("apple", "banana", "cherry");
         ThreadedStream<String> threadedStream = ThreadedStream.threaded(sourceStream);

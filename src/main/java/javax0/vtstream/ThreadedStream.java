@@ -11,50 +11,80 @@ import static javax0.vtstream.Command.exception;
 @SuppressWarnings("NullableProblems")
 public class ThreadedStream<T> implements Stream<T> {
 
-    // it is not possible to represent the type of the command's input parameter and that of the downstream
-    // without introducing another type argument, and complicating the interface; however, the constructors
-    // ensure that the command is compatible with the downstream
+    /**
+     * The command to be applied to each element of the downstream or the source if there is no downstream,
+     * producing elements of the constructed stream.
+     * <p>
+     * It is not possible to represent the type of the command's input parameter and that of the downstream
+     * without introducing another type argument, and complicating the interface; however, the constructors
+     * ensure that the command is compatible with the downstream.
+     */
     private final Command<Object, T> command;
+    /**
+     * The downstream stream from which elements are processed by the command.
+     */
     private final ThreadedStream<?> downstream;
+
+    /**
+     * The source stream from which elements are processed by the command.
+     * If there is a downstream, the source stream is inherited from the downstream.
+     */
     private final Stream<?> source;
 
+    /**
+     * The maximum number of elements to be processed by the stream. If set to a positive value, the stream
+     * will process at most this number of elements. If set to a negative value, the stream will process all
+     * elements from the source stream.
+     */
     private long limit = -1;
 
+    /**
+     * Indicates whether the stream has been operated upon. If true, the stream is considered
+     * consumed and no further operations can be chained to it.
+     * <p>
+     * This is a simplified version of the original Stream API's implementation, which uses a
+     * more complex mechanism to track the state of the stream. The original implementation
+     * uses a {@code StreamShape} object to track the state of the stream, which is updated
+     * when the stream is operated upon. This mechanism is not used here, as it is not necessary
+     * for the purposes of this code.
+     */
     private boolean chained = false;
     private static final String MSG_STREAM_LINKED = "stream has already been operated upon or closed";
 
     /**
      * Constructs a new ThreadedStream instance by applying a command on a downstream
-     * @param command the command to be applied to each element of the downstream, producing elements of the constructed stream
-     * @param downstream
-     * @param <S> the type of the source (downstream)
+     *
+     * @param command    the command to be applied to each element of the downstream, producing elements of the constructed stream
+     * @param downstream the stream from where we get the elements to be processed by the command
+     * @param <S>        the type of the source (downstream)
      */
     private <S> ThreadedStream(Command<? super S, ? extends T> command, ThreadedStream<S> downstream) {
-        this(command, downstream, () -> {});
+        this(command, downstream, () -> {
+        });
     }
 
     /**
      * Constructs a new ThreadedStream instance by applying a command on a downstream
-     * @param command
-     * @param downstream
-     * @param closeHandler
-     * @param <S> the type of the source (downstream)
+     *
+     * @param command      the command to be applied to each element of the downstream, producing elements of the constructed stream
+     * @param downstream   the stream from where we get the elements to be processed by the command
+     * @param closeHandler a Runnable to be executed when the stream is closed
+     * @param <S>          the type of the source (downstream)
      */
     private <S> ThreadedStream(Command<? super S, ? extends T> command, ThreadedStream<S> downstream, Runnable closeHandler) {
         // we'll lose '<S>' after this point, but we know the command is compatible with the downstream;
         // cast the command now, so we don't need to cast it later:
         // its input will come from downstream, so will be type S, which will be erased into Object anyway
         // we don't care what exact subtype of T the result is
+        //noinspection unchecked
         this.command = (Command<Object, T>) command;
-        this.downstream = downstream;
-        if (downstream != null) {
-            if (downstream.chained) {
-                throw new IllegalStateException(MSG_STREAM_LINKED);
-            }
-            downstream.chained = true;
+        this.downstream = Objects.requireNonNull(downstream, "downstream cannot ne null");
+        if (downstream.chained) {
+            throw new IllegalStateException(MSG_STREAM_LINKED);
         }
+        downstream.chained = true;
         this.source = downstream.source;
-        this.limit = downstream == null ? -1 : downstream.limit;
+        this.limit = downstream.limit;
         this.closeHandler = closeHandler;
     }
 
@@ -62,8 +92,8 @@ public class ThreadedStream<T> implements Stream<T> {
         this.command = null;
         this.downstream = null;
         this.source = source;
-        this.limit = -1;
-        this.closeHandler = () -> {};
+        this.closeHandler = () -> {
+        };
     }
 
     public static <K> ThreadedStream<K> threaded(Stream<K> source) {
@@ -84,7 +114,7 @@ public class ThreadedStream<T> implements Stream<T> {
             } else {
                 return toOrderedStream();
             }
-        }finally {
+        } finally {
             close();
         }
     }
@@ -162,9 +192,7 @@ public class ThreadedStream<T> implements Stream<T> {
                 sourceItem -> {
                     Task task = new Task();
                     tasks.add(task);
-                    task.workerThread = Thread.startVirtualThread(() -> {
-                        task.result = calculate(sourceItem);
-                    });
+                    task.workerThread = Thread.startVirtualThread(() -> task.result = calculate(sourceItem));
                 }
         );
 
@@ -215,7 +243,8 @@ public class ThreadedStream<T> implements Stream<T> {
                     //noinspection unchecked
                     return (Command.Result<T>) downstreamResult;
                 }
-                return command.execute(downstreamResult.result());
+                //noinspection unchecked
+                return command == null ? (Command.Result<T>) downstreamResult.result() : command.execute(downstreamResult.result());
             } catch (Exception e) {
                 return exception(e);
             }
@@ -234,7 +263,6 @@ public class ThreadedStream<T> implements Stream<T> {
 
     @Override
     public <R> ThreadedStream<R> map(Function<? super T, ? extends R> mapper) {
-        //noinspection unchecked
         return new ThreadedStream<>(new Command.Map<>(mapper), this);
     }
 

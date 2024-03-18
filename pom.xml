@@ -4,7 +4,7 @@
 
     <groupId>com.javax0</groupId>
     <artifactId>vtstream</artifactId>
-    <version>1.0.1-SNAPSHOT</version>
+    <version>1.0.1</version>
     <packaging>jar</packaging>
 
     <name>javax0.vtstream</name>
@@ -21,6 +21,12 @@
             <name>Peter Verhas</name>
             <url>https://github.com/verhas</url>
             <id>verhas</id>
+        </developer>
+        <developer>
+            <email></email>
+            <name>Istvan Kovacs</name>
+            <url>https://github.com/kofa73</url>
+            <id>kofa73</id>
         </developer>
     </developers>
     <scm>
