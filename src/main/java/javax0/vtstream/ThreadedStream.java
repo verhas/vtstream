@@ -1,6 +1,10 @@
 package javax0.vtstream;
 
 import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.*;
 import java.util.stream.*;
@@ -49,6 +53,12 @@ public class ThreadedStream<T> implements Stream<T> {
      * for the purposes of this code.
      */
     private boolean chained = false;
+
+    /**
+     * The executor service to be used to process the elements of the stream.
+     */
+    private final ExecutorService executorService;
+
     private static final String MSG_STREAM_LINKED = "stream has already been operated upon or closed";
 
     /**
@@ -57,10 +67,11 @@ public class ThreadedStream<T> implements Stream<T> {
      * @param command    the command to be applied to each element of the downstream, producing elements of the constructed stream
      * @param downstream the stream from where we get the elements to be processed by the command
      * @param <S>        the type of the source (downstream)
+     * @param executorService the executor service to be used to process the elements of the stream
      */
-    private <S> ThreadedStream(Command<? super S, ? extends T> command, ThreadedStream<S> downstream) {
+    private <S> ThreadedStream(Command<? super S, ? extends T> command, ThreadedStream<S> downstream, ExecutorService executorService) {
         this(command, downstream, () -> {
-        });
+        }, executorService);
     }
 
     /**
@@ -70,8 +81,9 @@ public class ThreadedStream<T> implements Stream<T> {
      * @param downstream   the stream from where we get the elements to be processed by the command
      * @param closeHandler a Runnable to be executed when the stream is closed
      * @param <S>          the type of the source (downstream)
+     * @param executorService the executor service to be used to process the elements of the stream
      */
-    private <S> ThreadedStream(Command<? super S, ? extends T> command, ThreadedStream<S> downstream, Runnable closeHandler) {
+    private <S> ThreadedStream(Command<? super S, ? extends T> command, ThreadedStream<S> downstream, Runnable closeHandler, ExecutorService executorService) {
         // we'll lose '<S>' after this point, but we know the command is compatible with the downstream;
         // cast the command now, so we don't need to cast it later:
         // its input will come from downstream, so will be type S, which will be erased into Object anyway
@@ -86,20 +98,25 @@ public class ThreadedStream<T> implements Stream<T> {
         this.source = downstream.source;
         this.limit = downstream.limit;
         this.closeHandler = closeHandler;
+        this.executorService = executorService;
     }
 
-    private ThreadedStream(Stream<T> source) {
+    private ThreadedStream(Stream<T> source, ExecutorService executorService) {
         this.command = null;
         this.downstream = null;
         this.source = source;
         this.closeHandler = () -> {
         };
+        this.executorService = executorService;
     }
 
     public static <K> ThreadedStream<K> threaded(Stream<K> source) {
-        return new ThreadedStream<>(source);
+        return new ThreadedStream<>(source, Executors.newVirtualThreadPerTaskExecutor());
     }
 
+    public static <K> ThreadedStream<K> threaded(Stream<K> source, ExecutorService executorService) {
+        return new ThreadedStream<>(source, executorService);
+    }
 
     public static class ThreadExecutionException extends RuntimeException {
         public ThreadExecutionException(Throwable cause) {
@@ -148,7 +165,7 @@ public class ThreadedStream<T> implements Stream<T> {
         final Stream<?> limitedSource = limit >= 0 ? source.limit(limit) : source;
         limitedSource.forEach(
                 t -> {
-                    Thread.startVirtualThread(() -> result.add(calculate(t)));
+                    this.executorService.execute(() -> result.add(calculate(t)));
                     n.incrementAndGet();
                 });
         return IntStream.range(0, n.get())
@@ -170,7 +187,7 @@ public class ThreadedStream<T> implements Stream<T> {
 
     private Stream<T> toOrderedStream() {
         class Task {
-            Thread workerThread;
+            Future<?> future;
             volatile Command.Result<T> result;
 
             /**
@@ -179,8 +196,8 @@ public class ThreadedStream<T> implements Stream<T> {
              */
             static void waitForResult(Task task) {
                 try {
-                    task.workerThread.join();
-                } catch (InterruptedException e) {
+                    task.future.get();
+                } catch (ExecutionException | InterruptedException e) {
                     task.result = deleted();
                 }
             }
@@ -192,7 +209,7 @@ public class ThreadedStream<T> implements Stream<T> {
                 sourceItem -> {
                     Task task = new Task();
                     tasks.add(task);
-                    task.workerThread = Thread.startVirtualThread(() -> task.result = calculate(sourceItem));
+                    task.future = this.executorService.submit(() -> task.result = calculate(sourceItem));
                 }
         );
 
@@ -257,13 +274,13 @@ public class ThreadedStream<T> implements Stream<T> {
     }
 
     private ThreadedStream<T> filteredStream(Command<T, T> command) {
-        return new ThreadedStream<>(command, this);
+        return new ThreadedStream<>(command, this, this.executorService);
     }
 
 
     @Override
     public <R> ThreadedStream<R> map(Function<? super T, ? extends R> mapper) {
-        return new ThreadedStream<>(new Command.Map<>(mapper), this);
+        return new ThreadedStream<>(new Command.Map<>(mapper), this, this.executorService);
     }
 
     @Override
@@ -480,7 +497,7 @@ public class ThreadedStream<T> implements Stream<T> {
 
     @Override
     public Stream<T> onClose(Runnable closeHandler) {
-        return new ThreadedStream<>(new Command.NoOp<>(), this, closeHandler);
+        return new ThreadedStream<>(new Command.NoOp<>(), this, closeHandler, this.executorService);
     }
 
 
