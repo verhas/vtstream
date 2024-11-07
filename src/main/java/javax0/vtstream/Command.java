@@ -13,24 +13,25 @@ import java.util.function.Predicate;
  * This class and its subclasses encapsulate operations such as mapping, filtering,
  * distinct, and others that can be applied to stream elements.
  * <p>
- * The {@code Command} class uses a generic type {@code <T>} for input elements and {@code <R>}
- * for the result of the command execution. Each command processes elements of type {@code T}
- * and produces results of type {@code R}. Commands can modify elements, filter them, or apply
+ * The {@code Command} class uses a generic type {@code <INPUT>} for input elements and {@code <RESULT>}
+ * for the result of the command execution. Each command processes elements of type {@code INPUT}
+ * and produces results of type {@code RESULT}. Commands can modify elements, filter them, or apply
  * any other operation as defined in their specific implementation.
  *
- * @param <T> the type of the input elements to the command
- * @param <R> the type of the result of the command execution
+ * @param <INPUT>  the type of the input elements to the command
+ * @param <RESULT> the command execution's result's type
  */
-abstract class Command<T, R> {
+abstract class Command<INPUT, RESULT> {
 
     /**
-     * A record that encapsulates the result of executing a command. It can represent
-     * a valid result or a special marker indicating that an element has been "deleted"
-     * or filtered out by the command.
+     * A record that encapsulates the result of executing a command.
+     * <p>
+     * It can represent a valid result, an empty result, a special instance that means the result was deleted and/or
+     * filtered out, or it can also contain an exception that occurred during the command execution.
      *
-     * @param <R> the type of the result
+     * @param <RESULT> the type of the result
      */
-    public record Result<R>(R result, Exception exception) {
+    public record Result<RESULT>(RESULT result, Exception exception) {
         /**
          * A static final instance of Result representing a deleted or filtered out element.
          */
@@ -45,17 +46,27 @@ abstract class Command<T, R> {
             return this == DELETED;
         }
 
-        public Result(R result) {
+        /**
+         * Create a new Result instance with the given result.
+         *
+         * @param result the result of the command execution
+         */
+        public Result(RESULT result) {
             this(result, null);
         }
 
+        /**
+         * Create a new Result instance with the {@code null} as result and exception.
+         *
+         * @param exception the exception that occurred during the command execution
+         */
         public Result(Exception exception) {
             this(null, exception);
         }
     }
 
     /**
-     * Creates a special {@code Result} instance representing a deleted or filtered out element.
+     * Returns a special {@code Result} instance representing a deleted or filtered out element.
      *
      * @param <T> the type of the input elements
      * @return a {@code Result} instance representing a deleted element.
@@ -65,8 +76,15 @@ abstract class Command<T, R> {
         return (Result<T>) Result.DELETED;
     }
 
+    /**
+     * Create a new result with the exception.
+     *
+     * @param e   the exception that occurred during the command execution
+     * @param <T> the type of the result
+     * @return a {@code Result} instance with the exception
+     */
     public static <T> Result<T> exception(Exception e) {
-        //noinspection unchecked
+        //noinspection
         return new Result<>(e);
     }
 
@@ -76,7 +94,7 @@ abstract class Command<T, R> {
      * @param t the input element to process
      * @return the result of executing the command on the input element
      */
-    public abstract Result<R> execute(T t);
+    public abstract Result<RESULT> execute(INPUT t);
 
     /**
      * Helper method to create a result unless a condition is met, in which case it returns

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.*;
@@ -19,6 +20,22 @@ public class TestThreadedStream {
     void testParallelExecution() {
         AtomicInteger i = new AtomicInteger(30);
         final var s = ThreadedStream.threaded(Stream.of("a", "b", "c").parallel()).map(k ->
+                {
+                    try {
+                        Thread.sleep(i.getAndAdd(-10));
+                    } catch (InterruptedException ignore) {
+                    }
+                    return k + k;
+                }
+        ).collect(Collectors.toSet());
+        assertEquals(Set.of("aa", "bb", "cc"), s);
+    }
+
+    @Test
+    @DisplayName("Simple parallel execution using the ForJoinPool common pool")
+    void testParallelExecutionUsingNormalThreads() {
+        AtomicInteger i = new AtomicInteger(30);
+        final var s = ThreadedStream.threaded(Stream.of("a", "b", "c").parallel(), ForkJoinPool.commonPool()).map(k ->
                 {
                     try {
                         Thread.sleep(i.getAndAdd(-10));

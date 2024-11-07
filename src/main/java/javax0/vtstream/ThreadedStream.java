@@ -12,7 +12,6 @@ import java.util.stream.*;
 import static javax0.vtstream.Command.deleted;
 import static javax0.vtstream.Command.exception;
 
-@SuppressWarnings("NullableProblems")
 public class ThreadedStream<T> implements Stream<T> {
 
     /**

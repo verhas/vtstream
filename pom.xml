@@ -4,7 +4,7 @@
 
     <groupId>com.javax0</groupId>
     <artifactId>vtstream</artifactId>
-    <version>1.0.1</version>
+    <version>1.1.0</version>
     <packaging>jar</packaging>
 
     <name>javax0.vtstream</name>
@@ -23,7 +23,6 @@
             <id>verhas</id>
         </developer>
         <developer>
-            <email></email>
             <name>Istvan Kovacs</name>
             <url>https://github.com/kofa73</url>
             <id>kofa73</id>
@@ -57,7 +56,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
-                <version>3.6.3</version>
+                <version>3.10.1</version>
                 <executions>
                     <execution>
                         <id>attach-javadocs</id>
@@ -71,24 +70,23 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <version>3.12.1</version>
+                <version>3.13.0</version>
                 <configuration>
+                    <source>21</source>
+                    <target>21</target>
                     <release>21</release>
                 </configuration>
             </plugin>
 
             <plugin>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.2.5</version>
-                <configuration>
-                    <argLine>--enable-preview</argLine>
-                </configuration>
+                <version>3.5.1</version>
             </plugin>
 
             <plugin>
                 <groupId>org.sonatype.plugins</groupId>
                 <artifactId>nexus-staging-maven-plugin</artifactId>
-                <version>1.6.13</version>
+                <version>1.7.0</version>
                 <extensions>true</extensions>
                 <configuration>
                     <serverId>ossrh</serverId>
@@ -100,7 +98,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-gpg-plugin</artifactId>
-                <version>3.1.0</version>
+                <version>3.2.5</version>
                 <executions>
                     <execution>
                         <id>sign-artifacts</id>
@@ -118,7 +116,7 @@
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
-            <version>5.9.2</version>
+            <version>5.10.3</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
